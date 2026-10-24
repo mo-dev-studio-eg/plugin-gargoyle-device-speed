@@ -37,6 +37,7 @@ installed_size="$(du -sk "$data_root" | awk '{print $1}')"
 cat > "$control_root/control" <<EOF
 Package: $package_name
 Version: $package_version-$package_release
+Status: install user not-installed
 Depends: $package_depends
 Section: admin
 Architecture: $package_arch

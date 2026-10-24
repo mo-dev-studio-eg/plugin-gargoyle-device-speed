@@ -21,7 +21,8 @@ This separate repository has a GitHub Actions workflow at
 `.github/workflows/build.yml`. Run **Build Device Speed plugin IPK** manually
 from the Actions tab and download the `plugin-gargoyle-device-speed-ipk` artifact.
 The workflow creates an architecture-independent IPK without compiling a full
-firmware image.
+firmware image. It includes Gargoyle's package-status metadata so the legacy
+`gpkg` package manager can recognize a local IPK.
 
 The Gargoyle `build.sh` in the parent workspace can also stage this plugin into
 the OpenWrt package tree. It can be copied to `gargoyle/package/` for a

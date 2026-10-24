@@ -34,6 +34,7 @@ jobs:
           [[ -s "${package[0]}" ]]
           ar t "${package[0]}"
           ar p "${package[0]}" control.tar.gz | tar -tzf - | grep -qx 'control'
+          ar p "${package[0]}" control.tar.gz | tar -xOzf - control | grep -qx 'Status: install user not-installed'
           ar p "${package[0]}" data.tar.gz | tar -tzf - | grep -qx './www/js/device_speed.js'
           ar p "${package[0]}" data.tar.gz | tar -tzf - | grep -qx './etc/config/device_speed'
 
