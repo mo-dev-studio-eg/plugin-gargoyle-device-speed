@@ -31,6 +31,7 @@ chmod 0755 \
 	"$data_root/www/device_speed.sh" \
 	"$data_root/usr/lib/gargoyle/device_speed_install.sh" \
 	"$data_root/usr/lib/gargoyle/device_speed_uninstall.sh" \
+	"$data_root/usr/lib/gargoyle/device_speed_refresh.sh" \
 	"$data_root/etc/uci-defaults/99-device-speed"
 
 installed_size="$(du -sk "$data_root" | awk '{print $1}')"

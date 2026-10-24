@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=plugin-gargoyle-device-speed
 PKG_VERSION:=1.0.0
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)
 
@@ -41,6 +41,7 @@ define Package/plugin-gargoyle-device-speed/install
 	$(INSTALL_BIN) ./files/www/device_speed.sh $(1)/www/device_speed.sh
 	$(INSTALL_BIN) ./files/usr/lib/gargoyle/device_speed_install.sh $(1)/usr/lib/gargoyle/device_speed_install.sh
 	$(INSTALL_BIN) ./files/usr/lib/gargoyle/device_speed_uninstall.sh $(1)/usr/lib/gargoyle/device_speed_uninstall.sh
+	$(INSTALL_BIN) ./files/usr/lib/gargoyle/device_speed_refresh.sh $(1)/usr/lib/gargoyle/device_speed_refresh.sh
 	$(INSTALL_BIN) ./files/etc/uci-defaults/99-device-speed $(1)/etc/uci-defaults/99-device-speed
 endef
 

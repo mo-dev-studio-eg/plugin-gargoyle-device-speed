@@ -20,6 +20,12 @@ config_load dhcp
 config_foreach remove_managed_host host
 uci commit dhcp
 
+if [ -f /etc/crontabs/root ]; then
+	grep -Fv '/usr/lib/gargoyle/device_speed_refresh.sh' /etc/crontabs/root > /tmp/device_speed.cron
+	mv /tmp/device_speed.cron /etc/crontabs/root
+	/etc/init.d/cron restart >/dev/null 2>&1
+fi
+
 uci -q delete gargoyle.display.firewall_device_speed
 uci -q delete gargoyle.scripts.firewall_device_speed
 uci -q delete gargoyle.firewall.device_speed

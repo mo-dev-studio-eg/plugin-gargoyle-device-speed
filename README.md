@@ -1,19 +1,18 @@
-# Gargoyle Device Speed plugin
+# Gargoyle Bandwidth Control plugin
 
-The plugin defines each group's minimum and optional maximum upload/download
-rates for Internet traffic. All rates are entered in Mbps and converted to
-Kbps for Gargoyle's QoS engine. Multiple devices in a group share the group's
-aggregate rates; SFQ shares that group's bandwidth between active client flows.
+The page keeps the router's WAN upload/download capacity at the top. Speed
+policies use Kbps and Quota-style `Applies to` choices: the entire network,
+specific IP addresses, all remaining hosts individually, or all remaining hosts
+combined. Multiple IP addresses in a specific policy share that policy's
+aggregate minimum and maximum rates.
 
-The router upload/download capacities are configured independently. The sum of
-group minimum upload rates must not exceed router upload capacity; the same
-validation is applied independently to download. Unspecified group maxima use
-the router capacity. Remaining bandwidth is shared evenly among QoS classes.
+The sum of minimum rates is validated separately against upload and download
+capacity. Individual remaining-host policies reserve the minimum independently
+for each known LAN host. A lightweight cron refresh notices DHCP/static-host
+changes and rebuilds individual QoS classes.
 
-Devices can be selected from active DHCP leases or entered using an IPv4 and
-MAC address. DHCP reservations are added for selected devices that do not
-already have a reservation, so the IP-based QoS rules remain attached to the
-same device.
+Policies match IPv4 addresses. Maxima may be left blank to use the router WAN
+capacity. Remaining class bandwidth is shared by the Gargoyle QoS scheduler.
 
 ## Build
 

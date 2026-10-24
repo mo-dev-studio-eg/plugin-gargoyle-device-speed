@@ -15,32 +15,42 @@ var dhcpLeaseLines = [];
 
 <fieldset>
 	<legend class="sectionheader">Router Internet capacity</legend>
-	<div><label class="leftcolumn" for="upload_capacity">Maximum upload:</label><input id="upload_capacity" type="number" min="0.001" step="0.001" /> <em>Mbps</em></div>
-	<div><label class="leftcolumn" for="download_capacity">Maximum download:</label><input id="download_capacity" type="number" min="0.001" step="0.001" /> <em>Mbps</em></div>
-	<p>Enter the usable WAN speed. Device groups share this capacity.</p>
+	<div><label class="leftcolumn" for="upload_capacity">Maximum upload:</label><input id="upload_capacity" type="number" min="1" step="1" /> <em>Kbps</em></div>
+	<div><label class="leftcolumn" for="download_capacity">Maximum download:</label><input id="download_capacity" type="number" min="1" step="1" /> <em>Kbps</em></div>
+	<p>Enter the usable WAN speed. All bandwidth policies share this capacity.</p>
 </fieldset>
 
 <fieldset>
-	<legend class="sectionheader">Add a shared speed group</legend>
-	<div><label class="leftcolumn" for="group_name">Group name:</label><input id="group_name" maxlength="24" /></div>
-	<div><label class="leftcolumn" for="group_upload_min">Upload minimum:</label><input id="group_upload_min" type="number" min="0" step="0.001" value="0" /> <em>Mbps</em></div>
-	<div><label class="leftcolumn" for="group_upload_max">Upload maximum:</label><input id="group_upload_max" type="number" min="0.001" step="0.001" /> <em>Mbps (blank = router maximum)</em></div>
-	<div><label class="leftcolumn" for="group_download_min">Download minimum:</label><input id="group_download_min" type="number" min="0" step="0.001" value="0" /> <em>Mbps</em></div>
-	<div><label class="leftcolumn" for="group_download_max">Download maximum:</label><input id="group_download_max" type="number" min="0.001" step="0.001" /> <em>Mbps (blank = router maximum)</em></div>
+	<legend class="sectionheader">Add a bandwidth policy</legend>
+	<div>
+		<label class="leftcolumn" for="applies_to_type">Applies to:</label>
+		<select id="applies_to_type" onchange="setPolicyVisibility()">
+			<option value="all">Entire Local Network</option>
+			<option value="only">Only the following hosts</option>
+			<option value="others_individual">All individual hosts without explicit policies</option>
+			<option value="others_combined">All hosts without explicit policies (combined)</option>
+		</select>
+	</div>
+	<div id="policy_ip_container">
+		<div id="policy_ip_table_container" class="widerightcolumnonly"></div>
+		<div class="widerightcolumnonly">
+			<input type="text" id="add_ip" onkeyup="proofreadMultipleIps(this)" style="width:250px;" />
+			<input type="button" class="default_button" id="add_ip_button" value="Add" onclick="addPolicyAddresses()" />
+		</div>
+		<div class="widerightcolumnonly"><em>Enter a LAN IP address, then press Add. Repeat to include more devices at the same rates.</em></div>
+	</div>
+	<div><label class="leftcolumn" for="policy_upload_min">Upload minimum:</label><input id="policy_upload_min" type="number" min="0" step="1" value="0" /> <em>Kbps</em></div>
+	<div><label class="leftcolumn" for="policy_upload_max">Upload maximum:</label><input id="policy_upload_max" type="number" min="1" step="1" /> <em>Kbps (blank = router maximum)</em></div>
+	<div><label class="leftcolumn" for="policy_download_min">Download minimum:</label><input id="policy_download_min" type="number" min="0" step="1" value="0" /> <em>Kbps</em></div>
+	<div><label class="leftcolumn" for="policy_download_max">Download maximum:</label><input id="policy_download_max" type="number" min="1" step="1" /> <em>Kbps (blank = router maximum)</em></div>
 	<div class="internal_divider"></div>
-	<div><label class="leftcolumn" for="existing_group">Add devices to:</label><select id="existing_group"><option value="">New group</option></select></div>
-	<div><label class="leftcolumn" for="dhcp_device">DHCP device:</label><select id="dhcp_device"><option value="">Select a connected DHCP device</option></select>
-	<input type="button" id="add_dhcp_device" value="Add device to group" /></div>
-	<div><label class="leftcolumn" for="manual_ip">Manual device IP:</label><input id="manual_ip" placeholder="192.168.1.20" /></div>
-	<div><label class="leftcolumn" for="manual_mac">Manual device MAC:</label><input id="manual_mac" placeholder="AA:BB:CC:DD:EE:FF" /></div>
-	<div><input type="button" id="add_manual_device" value="Add manual device to group" /></div>
-	<div id="pending_members"></div>
-	<div><input type="button" id="add_group" class="default_button" value="Add group" /></div>
+	<div><input type="button" id="add_policy" class="default_button" value="Add policy" /></div>
+	<div><input type="button" id="cancel_policy_edit" value="Cancel edit" style="display:none;" /></div>
 </fieldset>
 
 <fieldset>
-	<legend class="sectionheader">Speed groups</legend>
-	<div id="groups_container"></div>
+	<legend class="sectionheader">Active bandwidth policies</legend>
+	<div id="policies_table_container"></div>
 </fieldset>
 
 <div id="bottom_button_container">
