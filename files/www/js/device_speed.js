@@ -399,7 +399,7 @@ function saveChanges()
 		alert("The QoS engine supports up to 60 speed classes. Reduce the number of policies or individual hosts.");
 		return;
 	}
-	applyDeviceSpeedConfig(uploadCapacity, downloadCapacity, validation.individualTargets);
+	applyDeviceSpeedConfig(uploadCapacity, downloadCapacity);
 }
 
 function addUciOption(config, packageName, section, option, value)
@@ -407,7 +407,7 @@ function addUciOption(config, packageName, section, option, value)
 	config.set(packageName, section, option, "" + value);
 }
 
-function applyDeviceSpeedConfig(uploadCapacity, downloadCapacity, individualTargets)
+function applyDeviceSpeedConfig(uploadCapacity, downloadCapacity)
 {
 	var config = uciOriginal.clone();
 	var sections = config.getAllSections("device_speed");
@@ -415,100 +415,6 @@ function applyDeviceSpeedConfig(uploadCapacity, downloadCapacity, individualTarg
 	config.set("device_speed", "main", "", "settings");
 	addUciOption(config, "device_speed", "main", "upload_capacity", uploadCapacity);
 	addUciOption(config, "device_speed", "main", "download_capacity", downloadCapacity);
-
-	config.removeSection("qos_gargoyle", "upload");
-	config.removeSection("qos_gargoyle", "download");
-	config.removeAllSectionsOfType("qos_gargoyle", "upload_class");
-	config.removeAllSectionsOfType("qos_gargoyle", "download_class");
-	config.removeAllSectionsOfType("qos_gargoyle", "upload_rule");
-	config.removeAllSectionsOfType("qos_gargoyle", "download_rule");
-	config.set("qos_gargoyle", "upload", "", "upload");
-	config.set("qos_gargoyle", "download", "", "download");
-	addUciOption(config, "qos_gargoyle", "upload", "total_bandwidth", uploadCapacity);
-	addUciOption(config, "qos_gargoyle", "download", "total_bandwidth", downloadCapacity);
-	addUciOption(config, "qos_gargoyle", "upload", "default_class", "uclass_speed_default");
-	addUciOption(config, "qos_gargoyle", "download", "default_class", "dclass_speed_default");
-	addUciOption(config, "qos_gargoyle", "download", "qos_monenabled", "false");
-
-	var allPolicy = null;
-	var combinedPolicy = null;
-	var onlyPolicies = [];
-	var individualPolicy = null;
-	for(i = 0; i < deviceSpeedPolicies.length; i++)
-	{
-		var policy = deviceSpeedPolicies[i];
-		if(policy.applies == "all") { allPolicy = policy; }
-		else if(policy.applies == "others_combined") { combinedPolicy = policy; }
-		else if(policy.applies == "others_individual") { individualPolicy = policy; }
-		else { onlyPolicies.push(policy); }
-	}
-
-	var speedClasses = [];
-	var defaultPolicy = allPolicy || combinedPolicy;
-	speedClasses.push({
-		id: "speed_default",
-		name: allPolicy ? "Entire network" : (combinedPolicy ? "Other hosts combined" : "Other devices"),
-		uploadMin: defaultPolicy ? parseKbps(defaultPolicy.uploadMin, false) : 0,
-		uploadMax: defaultPolicy ? parseKbps(defaultPolicy.uploadMax, true) : null,
-		downloadMin: defaultPolicy ? parseKbps(defaultPolicy.downloadMin, false) : 0,
-		downloadMax: defaultPolicy ? parseKbps(defaultPolicy.downloadMax, true) : null,
-		generated: false
-	});
-	for(i = 0; i < onlyPolicies.length; i++)
-	{
-		var only = onlyPolicies[i];
-		speedClasses.push({
-			id: "speed_policy_" + (i + 1),
-			name: "Explicit policy " + (i + 1),
-			uploadMin: parseKbps(only.uploadMin, false),
-			uploadMax: parseKbps(only.uploadMax, true),
-			downloadMin: parseKbps(only.downloadMin, false),
-			downloadMax: parseKbps(only.downloadMax, true),
-			generated: false
-		});
-	}
-	for(i = 0; i < individualTargets.length; i++)
-	{
-		speedClasses.push({
-			id: "speed_ind_" + (i + 1),
-			name: "Other host " + individualTargets[i],
-			uploadMin: parseKbps(individualPolicy.uploadMin, false),
-			uploadMax: parseKbps(individualPolicy.uploadMax, true),
-			downloadMin: parseKbps(individualPolicy.downloadMin, false),
-			downloadMax: parseKbps(individualPolicy.downloadMax, true),
-			generated: true,
-			ip: individualTargets[i]
-		});
-	}
-	var shares = getEqualClassShares(speedClasses.length);
-	for(i = 0; i < speedClasses.length; i++)
-	{
-		var speedClass = speedClasses[i];
-		var uploadClass = "uclass_" + speedClass.id;
-		var downloadClass = "dclass_" + speedClass.id;
-		createSpeedClass(config, uploadClass, "upload_class", speedClass.name, speedClass.uploadMin, speedClass.uploadMax, shares[i], speedClass.generated);
-		createSpeedClass(config, downloadClass, "download_class", speedClass.name, speedClass.downloadMin, speedClass.downloadMax, shares[i], speedClass.generated);
-	}
-
-	var ruleOrder = 100;
-	for(i = 0; i < onlyPolicies.length; i++)
-	{
-		var policyIps = onlyPolicies[i].ips;
-		for(var ipIndex = 0; ipIndex < policyIps.length; ipIndex++)
-		{
-			createSpeedRule(config, "upload", "upload_rule_speed_policy_" + (i + 1) + "_" + (ipIndex + 1), "uclass_speed_policy_" + (i + 1), "source", policyIps[ipIndex], ruleOrder, false);
-			createSpeedRule(config, "download", "download_rule_speed_policy_" + (i + 1) + "_" + (ipIndex + 1), "dclass_speed_policy_" + (i + 1), "destination", policyIps[ipIndex], ruleOrder, false);
-			ruleOrder += 100;
-		}
-	}
-	for(i = 0; i < individualTargets.length; i++)
-	{
-		var individualIp = individualTargets[i];
-		createSpeedRule(config, "upload", "upload_rule_speed_ind_" + (i + 1), "uclass_speed_ind_" + (i + 1), "source", individualIp, ruleOrder, true);
-		createSpeedRule(config, "download", "download_rule_speed_ind_" + (i + 1), "dclass_speed_ind_" + (i + 1), "destination", individualIp, ruleOrder, true);
-		ruleOrder += 100;
-	}
-
 	for(i = 0; i < deviceSpeedPolicies.length; i++)
 	{
 		var saved = deviceSpeedPolicies[i];
@@ -528,10 +434,8 @@ function applyDeviceSpeedConfig(uploadCapacity, downloadCapacity, individualTarg
 		}
 	}
 
-	config.set("gargoyle", "status", "qos", "300");
 	var commands = config.getScriptCommands(uciOriginal);
-	commands += "\nuci commit device_speed\nuci commit qos_gargoyle\nuci commit gargoyle\n";
-	commands += "/etc/init.d/qos_gargoyle enable\n/etc/init.d/qos_gargoyle start\n/usr/lib/gargoyle/device_speed_refresh.sh --force";
+	commands += "\nuci commit device_speed\n/usr/lib/gargoyle/device_speed_refresh.sh --force";
 	deviceSpeedSaving = true;
 	setControlsEnabled(false);
 	var callback = function(req)
@@ -546,40 +450,6 @@ function applyDeviceSpeedConfig(uploadCapacity, downloadCapacity, individualTarg
 	};
 	var param = getParameterDefinition("commands", commands) + "&" + getParameterDefinition("hash", document.cookie.replace(/^.*hash=/, "").replace(/[\t ;]+.*$/, ""));
 	runAjax("POST", "utility/run_commands.sh", param, callback);
-}
-
-function getEqualClassShares(count)
-{
-	var base = Math.floor(100 / count);
-	var remainder = 100 - base * count;
-	var shares = [];
-	for(var i = 0; i < count; i++)
-	{
-		shares.push(base + (remainder > 0 ? 1 : 0));
-		if(remainder > 0) { remainder--; }
-	}
-	return shares;
-}
-
-function createSpeedClass(config, section, type, name, minRate, maxRate, percent, generated)
-{
-	config.set("qos_gargoyle", section, "", type);
-	addUciOption(config, "qos_gargoyle", section, "name", name);
-	addUciOption(config, "qos_gargoyle", section, "percent_bandwidth", percent);
-	addUciOption(config, "qos_gargoyle", section, "device_speed_managed", "1");
-	if(generated) { addUciOption(config, "qos_gargoyle", section, "device_speed_generated_individual", "1"); }
-	if(minRate > 0) { addUciOption(config, "qos_gargoyle", section, "min_bandwidth", minRate); }
-	if(maxRate != null) { addUciOption(config, "qos_gargoyle", section, "max_bandwidth", maxRate); }
-}
-
-function createSpeedRule(config, direction, section, className, addressOption, ip, order, generated)
-{
-	config.set("qos_gargoyle", section, "", direction + "_rule");
-	addUciOption(config, "qos_gargoyle", section, "class", className);
-	addUciOption(config, "qos_gargoyle", section, "test_order", order);
-	addUciOption(config, "qos_gargoyle", section, addressOption, ip);
-	addUciOption(config, "qos_gargoyle", section, "device_speed_managed", "1");
-	if(generated) { addUciOption(config, "qos_gargoyle", section, "device_speed_generated_individual", "1"); }
 }
 
 function setControlsEnabled(enabled)

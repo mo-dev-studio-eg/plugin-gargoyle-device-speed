@@ -2,26 +2,38 @@
 
 . /lib/functions.sh
 
-STATE_FILE=/var/run/device_speed_clients
+STATE_FILE=/var/run/device_speed_state
 FORCE=0
 [ "$1" = "--force" ] && FORCE=1
 
 EXPLICIT_IPS=" "
 CLIENT_IPS=" "
-INDIVIDUAL_PRESENT=0
-INDIVIDUAL_UP_MIN=0
-INDIVIDUAL_UP_MAX=""
-INDIVIDUAL_DOWN_MIN=0
-INDIVIDUAL_DOWN_MAX=""
+ONLY_POLICIES=""
+ALL_POLICY=""
+COMBINED_POLICY=""
+INDIVIDUAL_POLICY=""
 UPLOAD_CAPACITY=0
 DOWNLOAD_CAPACITY=0
 TOTAL_UP_MIN=0
 TOTAL_DOWN_MIN=0
+POLICY_COUNT=0
+ONLY_COUNT=0
+
+error()
+{
+	echo "ERROR: $*"
+	logger -t device_speed "$*"
+	exit 1
+}
+
+is_uint()
+{
+	echo "$1" | grep -Eq '^[0-9]+$'
+}
 
 is_ipv4()
 {
-	local ip="$1"
-	echo "$ip" | awk -F. 'NF==4 { for(i=1;i<=4;i++) if($i !~ /^[0-9]+$/ || $i<0 || $i>255) exit 1; exit 0 } { exit 1 }'
+	echo "$1" | awk -F. 'NF==4 { for(i=1;i<=4;i++) if($i !~ /^[0-9]+$/ || $i<0 || $i>255) exit 1; exit 0 } { exit 1 }'
 }
 
 add_client_ip()
@@ -32,6 +44,12 @@ add_client_ip()
 	case "$EXPLICIT_IPS" in *" $ip "*) return ;; esac
 	case "$CLIENT_IPS" in *" $ip "*) return ;; esac
 	CLIENT_IPS="$CLIENT_IPS$ip "
+}
+
+read_capacity()
+{
+	config_get UPLOAD_CAPACITY main upload_capacity 0
+	config_get DOWNLOAD_CAPACITY main download_capacity 0
 }
 
 read_policy()
@@ -49,35 +67,62 @@ read_policy()
 	config_get up_max "$section" upload_max
 	config_get down_min "$section" download_min 0
 	config_get down_max "$section" download_max
-	if [ "$applies" = "only" ]; then
-		EXPLICIT_IPS="$EXPLICIT_IPS$ips "
-	fi
-	if [ "$applies" = "others_individual" ]; then
-		INDIVIDUAL_PRESENT=1
-		INDIVIDUAL_UP_MIN="$up_min"
-		INDIVIDUAL_UP_MAX="$up_max"
-		INDIVIDUAL_DOWN_MIN="$down_min"
-		INDIVIDUAL_DOWN_MAX="$down_max"
-	fi
-	if [ "$applies" = "others_individual" ]; then
-		return
-	fi
-	if [ "$applies" = "all" ] || [ "$applies" = "only" ] || [ "$applies" = "others_combined" ]; then
-		TOTAL_UP_MIN=$((TOTAL_UP_MIN + up_min))
-		TOTAL_DOWN_MIN=$((TOTAL_DOWN_MIN + down_min))
-	fi
-}
 
-read_capacity()
-{
-	config_get UPLOAD_CAPACITY main upload_capacity 0
-	config_get DOWNLOAD_CAPACITY main download_capacity 0
+	if ! is_uint "$up_min" || ! is_uint "$down_min"; then error "Invalid minimum rate in $section"; fi
+	[ -z "$up_max" ] || is_uint "$up_max" || error "Invalid upload maximum in $section"
+	[ -z "$down_max" ] || is_uint "$down_max" || error "Invalid download maximum in $section"
+	[ -z "$up_max" ] || [ "$up_max" -ge "$up_min" ] || error "Upload maximum is below minimum in $section"
+	[ -z "$down_max" ] || [ "$down_max" -ge "$down_min" ] || error "Download maximum is below minimum in $section"
+	[ "$up_min" -le "$UPLOAD_CAPACITY" ] || error "Upload minimum exceeds router capacity"
+	[ "$down_min" -le "$DOWNLOAD_CAPACITY" ] || error "Download minimum exceeds router capacity"
+	[ -z "$up_max" ] || [ "$up_max" -le "$UPLOAD_CAPACITY" ] || error "Upload maximum exceeds router capacity"
+	[ -z "$down_max" ] || [ "$down_max" -le "$DOWNLOAD_CAPACITY" ] || error "Download maximum exceeds router capacity"
+
+	POLICY_COUNT=$((POLICY_COUNT + 1))
+	case "$applies" in
+		all)
+			[ -z "$ALL_POLICY" ] || error "Only one entire-network policy is allowed"
+			ALL_POLICY="$section"
+			TOTAL_UP_MIN=$((TOTAL_UP_MIN + up_min))
+			TOTAL_DOWN_MIN=$((TOTAL_DOWN_MIN + down_min))
+		;;
+		only)
+			[ -n "$ips" ] || error "An explicit policy has no IP addresses"
+			for ip in $ips; do
+				is_ipv4 "$ip" || error "Invalid IP address in $section: $ip"
+				case "$EXPLICIT_IPS" in *" $ip "*) error "An IP appears in more than one explicit policy: $ip" ;; esac
+				EXPLICIT_IPS="$EXPLICIT_IPS$ip "
+			done
+			ONLY_POLICIES="$ONLY_POLICIES $section"
+			ONLY_COUNT=$((ONLY_COUNT + 1))
+			TOTAL_UP_MIN=$((TOTAL_UP_MIN + up_min))
+			TOTAL_DOWN_MIN=$((TOTAL_DOWN_MIN + down_min))
+		;;
+		others_combined)
+			[ -z "$COMBINED_POLICY" ] || error "Only one combined remaining-host policy is allowed"
+			COMBINED_POLICY="$section"
+			TOTAL_UP_MIN=$((TOTAL_UP_MIN + up_min))
+			TOTAL_DOWN_MIN=$((TOTAL_DOWN_MIN + down_min))
+		;;
+		others_individual)
+			[ -z "$INDIVIDUAL_POLICY" ] || error "Only one individual remaining-host policy is allowed"
+			INDIVIDUAL_POLICY="$section"
+		;;
+		*) error "Unsupported Applies to value in $section" ;;
+	esac
 }
 
 config_load device_speed
 config_foreach read_capacity settings
+if ! is_uint "$UPLOAD_CAPACITY" || ! is_uint "$DOWNLOAD_CAPACITY" || [ "$UPLOAD_CAPACITY" -le 0 ] || [ "$DOWNLOAD_CAPACITY" -le 0 ]; then
+	error "Router upload and download capacities must be configured in Kbps"
+fi
 config_foreach read_policy policy
-if [ "$UPLOAD_CAPACITY" -le 0 ] || [ "$DOWNLOAD_CAPACITY" -le 0 ]; then exit 0; fi
+
+[ -z "$ALL_POLICY" ] || { [ -z "$COMBINED_POLICY" ] && [ -z "$INDIVIDUAL_POLICY" ]; } || error "An entire-network policy cannot be combined with a remaining-host policy"
+[ -z "$COMBINED_POLICY" ] || [ -z "$INDIVIDUAL_POLICY" ] || error "Combined and individual remaining-host policies cannot both be used"
+[ "$TOTAL_UP_MIN" -le "$UPLOAD_CAPACITY" ] || error "Sum of upload minimums exceeds router capacity"
+[ "$TOTAL_DOWN_MIN" -le "$DOWNLOAD_CAPACITY" ] || error "Sum of download minimums exceeds router capacity"
 
 if [ -r /tmp/dhcp.leases ]; then
 	while read expiry mac ip hostname; do add_client_ip "$ip"; done < /tmp/dhcp.leases
@@ -99,124 +144,161 @@ if [ -n "$LAN_IP" ]; then
 else
 	CLIENT_IPS="$(echo "$CLIENT_IPS" | tr ' ' '\n' | awk 'NF' | sort -u | tr '\n' ' ')"
 fi
-[ "$INDIVIDUAL_PRESENT" -eq 1 ] || CLIENT_IPS=""
-
-CURRENT_STATE="$(printf '%s|%s|%s|%s\n' "$UPLOAD_CAPACITY" "$DOWNLOAD_CAPACITY" "$EXPLICIT_IPS" "$CLIENT_IPS")"
-if [ "$FORCE" -eq 0 ] && [ -r "$STATE_FILE" ] && [ "$(cat "$STATE_FILE")" = "$CURRENT_STATE" ]; then exit 0; fi
+[ -n "$INDIVIDUAL_POLICY" ] || CLIENT_IPS=""
 
 set -- $CLIENT_IPS
 CLIENT_COUNT=$#
-if [ "$INDIVIDUAL_PRESENT" -eq 1 ]; then
-	TOTAL_UP_MIN=$((TOTAL_UP_MIN + INDIVIDUAL_UP_MIN * CLIENT_COUNT))
-	TOTAL_DOWN_MIN=$((TOTAL_DOWN_MIN + INDIVIDUAL_DOWN_MIN * CLIENT_COUNT))
+if [ -n "$INDIVIDUAL_POLICY" ]; then
+	config_load device_speed
+	config_get IND_UP_MIN "$INDIVIDUAL_POLICY" upload_min 0
+	config_get IND_DOWN_MIN "$INDIVIDUAL_POLICY" download_min 0
+	TOTAL_UP_MIN=$((TOTAL_UP_MIN + IND_UP_MIN * CLIENT_COUNT))
+	TOTAL_DOWN_MIN=$((TOTAL_DOWN_MIN + IND_DOWN_MIN * CLIENT_COUNT))
 fi
-if [ "$TOTAL_UP_MIN" -gt "$UPLOAD_CAPACITY" ] || [ "$TOTAL_DOWN_MIN" -gt "$DOWNLOAD_CAPACITY" ]; then
-	logger -t device_speed "Individual bandwidth policy exceeds configured router capacity; retaining previous individual classes"
-	exit 1
-fi
+[ "$TOTAL_UP_MIN" -le "$UPLOAD_CAPACITY" ] || error "Sum of upload minimums exceeds router capacity"
+[ "$TOTAL_DOWN_MIN" -le "$DOWNLOAD_CAPACITY" ] || error "Sum of download minimums exceeds router capacity"
 
-count_base_upload_class()
-{
-	local section="$1"
-	local managed=""
-	local generated=""
-	config_get managed "$section" device_speed_managed
-	config_get generated "$section" device_speed_generated_individual
-	if [ "$managed" = "1" ] && [ "$generated" != "1" ]; then BASE_CLASS_COUNT=$((BASE_CLASS_COUNT + 1)); fi
-}
-BASE_CLASS_COUNT=0
-config_load qos_gargoyle
-config_foreach count_base_upload_class upload_class
-if [ $((BASE_CLASS_COUNT + CLIENT_COUNT)) -gt 60 ]; then
-	logger -t device_speed "More than 60 QoS classes would be required; retaining previous individual classes"
-	exit 1
+CLASS_COUNT=$((1 + ONLY_COUNT + CLIENT_COUNT))
+[ "$CLASS_COUNT" -le 60 ] || error "QoS class limit exceeded (maximum 60)"
+
+CURRENT_STATE="$(uci -q show device_speed; printf '%s\n' "$CLIENT_IPS")"
+if [ "$FORCE" -eq 0 ] && [ -r "$STATE_FILE" ] && [ "$(cat "$STATE_FILE")" = "$CURRENT_STATE" ] &&
+	[ "$(uci -q get qos_gargoyle.upload.total_bandwidth)" = "$UPLOAD_CAPACITY" ] &&
+	[ "$(uci -q get qos_gargoyle.download.total_bandwidth)" = "$DOWNLOAD_CAPACITY" ] &&
+	[ "$(uci -q get qos_gargoyle.upload.device_speed_managed)" = "1" ]; then
+	exit 0
 fi
 
-remove_generated_class()
-{
-	local section="$1"
-	local generated=""
-	config_get generated "$section" device_speed_generated_individual
-	[ "$generated" = "1" ] && uci -q delete "qos_gargoyle.$section"
-}
-remove_generated_rule()
-{
-	local section="$1"
-	local generated=""
-	config_get generated "$section" device_speed_generated_individual
-	[ "$generated" = "1" ] && uci -q delete "qos_gargoyle.$section"
-}
-config_load qos_gargoyle
-config_foreach remove_generated_class upload_class
-config_foreach remove_generated_class download_class
-config_foreach remove_generated_rule upload_rule
-config_foreach remove_generated_rule download_rule
+# This plugin owns the QoS configuration after installation. Rebuild it from
+# the validated device_speed model so no stale upload/download classes survive.
+old_sections="$(uci -q show qos_gargoyle | sed -n 's/^qos_gargoyle\.\([^.=]*\)=.*/\1/p' | sort -u)"
+for section in $old_sections; do uci -q delete "qos_gargoyle.$section"; done
 
-index=0
-for ip in $CLIENT_IPS; do
-	index=$((index + 1))
-	upload_class="uclass_speed_ind_$index"
-	download_class="dclass_speed_ind_$index"
-	upload_rule="upload_rule_speed_ind_$index"
-	download_rule="download_rule_speed_ind_$index"
-	uci set "qos_gargoyle.$upload_class=upload_class"
-	uci set "qos_gargoyle.$upload_class.name=Other_$ip"
-	uci set "qos_gargoyle.$upload_class.device_speed_managed=1"
-	uci set "qos_gargoyle.$upload_class.device_speed_generated_individual=1"
-	uci set "qos_gargoyle.$download_class=download_class"
-	uci set "qos_gargoyle.$download_class.name=Other_$ip"
-	uci set "qos_gargoyle.$download_class.device_speed_managed=1"
-	uci set "qos_gargoyle.$download_class.device_speed_generated_individual=1"
-	if [ "$INDIVIDUAL_PRESENT" -eq 1 ]; then
-		[ "$INDIVIDUAL_UP_MIN" -gt 0 ] && uci set "qos_gargoyle.$upload_class.min_bandwidth=$INDIVIDUAL_UP_MIN"
-		[ -n "$INDIVIDUAL_UP_MAX" ] && uci set "qos_gargoyle.$upload_class.max_bandwidth=$INDIVIDUAL_UP_MAX"
-		[ "$INDIVIDUAL_DOWN_MIN" -gt 0 ] && uci set "qos_gargoyle.$download_class.min_bandwidth=$INDIVIDUAL_DOWN_MIN"
-		[ -n "$INDIVIDUAL_DOWN_MAX" ] && uci set "qos_gargoyle.$download_class.max_bandwidth=$INDIVIDUAL_DOWN_MAX"
+uci set qos_gargoyle.upload=upload
+uci set qos_gargoyle.download=download
+uci set "qos_gargoyle.upload.total_bandwidth=$UPLOAD_CAPACITY"
+uci set "qos_gargoyle.download.total_bandwidth=$DOWNLOAD_CAPACITY"
+uci set qos_gargoyle.upload.default_class=uclass_speed_default
+uci set qos_gargoyle.download.default_class=dclass_speed_default
+uci set qos_gargoyle.upload.device_speed_managed=1
+uci set qos_gargoyle.download.device_speed_managed=1
+uci set qos_gargoyle.download.qos_monenabled=false
+uci set gargoyle.status.qos=300
+
+CLASS_SHARE=$((100 / CLASS_COUNT))
+SHARE_REMAINDER=$((100 - CLASS_SHARE * CLASS_COUNT))
+next_share()
+{
+	NEXT_SHARE="$CLASS_SHARE"
+	if [ "$SHARE_REMAINDER" -gt 0 ]; then NEXT_SHARE=$((NEXT_SHARE + 1)); SHARE_REMAINDER=$((SHARE_REMAINDER - 1)); fi
+}
+
+create_class_pair()
+{
+	local id="$1"
+	local label="$2"
+	local up_min="$3"
+	local up_max="$4"
+	local down_min="$5"
+	local down_max="$6"
+	local generated="$7"
+	next_share
+	local share="$NEXT_SHARE"
+	for direction in upload download; do
+		if [ "$direction" = "upload" ]; then class="uclass_$id"; type=upload_class; min="$up_min"; max="$up_max"; else class="dclass_$id"; type=download_class; min="$down_min"; max="$down_max"; fi
+		uci set "qos_gargoyle.$class=$type"
+		uci set "qos_gargoyle.$class.name=$label"
+		uci set "qos_gargoyle.$class.percent_bandwidth=$share"
+		uci set "qos_gargoyle.$class.device_speed_managed=1"
+		[ "$generated" = "1" ] && uci set "qos_gargoyle.$class.device_speed_generated_individual=1"
+		[ "$min" -gt 0 ] && uci set "qos_gargoyle.$class.min_bandwidth=$min"
+		[ -z "$max" ] || uci set "qos_gargoyle.$class.max_bandwidth=$max"
+	done
+}
+
+create_rule_pair()
+{
+	local id="$1"
+	local class_id="$2"
+	local ip="$3"
+	local order="$4"
+	local generated="$5"
+	uci set "qos_gargoyle.upload_rule_$id=upload_rule"
+	uci set "qos_gargoyle.upload_rule_$id.class=uclass_$class_id"
+	uci set "qos_gargoyle.upload_rule_$id.test_order=$order"
+	uci set "qos_gargoyle.upload_rule_$id.source=$ip"
+	uci set "qos_gargoyle.download_rule_$id=download_rule"
+	uci set "qos_gargoyle.download_rule_$id.class=dclass_$class_id"
+	uci set "qos_gargoyle.download_rule_$id.test_order=$order"
+	uci set "qos_gargoyle.download_rule_$id.destination=$ip"
+	if [ "$generated" = "1" ]; then
+		uci set "qos_gargoyle.upload_rule_$id.device_speed_managed=1"
+		uci set "qos_gargoyle.upload_rule_$id.device_speed_generated_individual=1"
+		uci set "qos_gargoyle.download_rule_$id.device_speed_managed=1"
+		uci set "qos_gargoyle.download_rule_$id.device_speed_generated_individual=1"
 	fi
-	uci set "qos_gargoyle.$upload_rule=upload_rule"
-	uci set "qos_gargoyle.$upload_rule.class=$upload_class"
-	uci set "qos_gargoyle.$upload_rule.test_order=$((100000 + index * 100))"
-	uci set "qos_gargoyle.$upload_rule.source=$ip"
-	uci set "qos_gargoyle.$upload_rule.device_speed_managed=1"
-	uci set "qos_gargoyle.$upload_rule.device_speed_generated_individual=1"
-	uci set "qos_gargoyle.$download_rule=download_rule"
-	uci set "qos_gargoyle.$download_rule.class=$download_class"
-	uci set "qos_gargoyle.$download_rule.test_order=$((100000 + index * 100))"
-	uci set "qos_gargoyle.$download_rule.destination=$ip"
-	uci set "qos_gargoyle.$download_rule.device_speed_managed=1"
-	uci set "qos_gargoyle.$download_rule.device_speed_generated_individual=1"
+}
+
+config_load device_speed
+default_section="$ALL_POLICY"
+[ -n "$default_section" ] || default_section="$COMBINED_POLICY"
+if [ -n "$default_section" ]; then
+	config_get default_up_min "$default_section" upload_min 0
+	config_get default_up_max "$default_section" upload_max
+	config_get default_down_min "$default_section" download_min 0
+	config_get default_down_max "$default_section" download_max
+	default_name="Network policy"
+	[ -z "$COMBINED_POLICY" ] || [ "$default_section" != "$COMBINED_POLICY" ] || default_name="Other hosts combined"
+else
+	default_up_min=0; default_up_max=""; default_down_min=0; default_down_max=""; default_name="Other devices"
+fi
+create_class_pair speed_default "$default_name" "$default_up_min" "$default_up_max" "$default_down_min" "$default_down_max" 0
+
+policy_index=0
+rule_order=100
+for section in $ONLY_POLICIES; do
+	policy_index=$((policy_index + 1))
+	config_get ips "$section" ip
+	config_get up_min "$section" upload_min 0
+	config_get up_max "$section" upload_max
+	config_get down_min "$section" download_min 0
+	config_get down_max "$section" download_max
+	class_id="speed_policy_$policy_index"
+	create_class_pair "$class_id" "Explicit_policy_$policy_index" "$up_min" "$up_max" "$down_min" "$down_max" 0
+	ip_index=0
+	for ip in $ips; do
+		ip_index=$((ip_index + 1))
+		create_rule_pair "speed_policy_${policy_index}_${ip_index}" "$class_id" "$ip" "$rule_order" 0
+		rule_order=$((rule_order + 100))
+	done
 done
 
-count_managed_upload_class()
-{
-	local section="$1"
-	local managed=""
-	config_get managed "$section" device_speed_managed
-	[ "$managed" = "1" ] && MANAGED_CLASS_COUNT=$((MANAGED_CLASS_COUNT + 1))
-}
-MANAGED_CLASS_COUNT=0
-config_load qos_gargoyle
-config_foreach count_managed_upload_class upload_class
-if [ "$MANAGED_CLASS_COUNT" -gt 0 ]; then
-	CLASS_SHARE=$((100 / MANAGED_CLASS_COUNT))
-	SHARE_REMAINDER=$((100 - CLASS_SHARE * MANAGED_CLASS_COUNT))
-	set_class_share()
-	{
-		local section="$1"
-		local managed=""
-		config_get managed "$section" device_speed_managed
-		if [ "$managed" = "1" ]; then
-			share="$CLASS_SHARE"
-			if [ "$SHARE_REMAINDER" -gt 0 ]; then share=$((share + 1)); SHARE_REMAINDER=$((SHARE_REMAINDER - 1)); fi
-			uci set "qos_gargoyle.$section.percent_bandwidth=$share"
-		fi
-	}
-	config_foreach set_class_share upload_class
-	SHARE_REMAINDER=$((100 - CLASS_SHARE * MANAGED_CLASS_COUNT))
-	config_foreach set_class_share download_class
+if [ -n "$INDIVIDUAL_POLICY" ]; then
+	config_get up_min "$INDIVIDUAL_POLICY" upload_min 0
+	config_get up_max "$INDIVIDUAL_POLICY" upload_max
+	config_get down_min "$INDIVIDUAL_POLICY" download_min 0
+	config_get down_max "$INDIVIDUAL_POLICY" download_max
+	index=0
+	for ip in $CLIENT_IPS; do
+		index=$((index + 1))
+		class_id="speed_ind_$index"
+		create_class_pair "$class_id" "Other_$ip" "$up_min" "$up_max" "$down_min" "$down_max" 1
+		create_rule_pair "speed_ind_$index" "$class_id" "$ip" "$rule_order" 1
+		rule_order=$((rule_order + 100))
+	done
 fi
 
 uci commit qos_gargoyle
-echo "$CURRENT_STATE" > "$STATE_FILE"
+uci commit gargoyle
+if [ "$(uci -q get qos_gargoyle.upload.total_bandwidth)" != "$UPLOAD_CAPACITY" ] || [ "$(uci -q get qos_gargoyle.download.total_bandwidth)" != "$DOWNLOAD_CAPACITY" ]; then
+	error "QoS bandwidth settings did not persist"
+fi
+/etc/init.d/qos_gargoyle enable >/dev/null 2>&1
 /etc/init.d/qos_gargoyle start >/dev/null 2>&1
+
+if ! /etc/init.d/qos_gargoyle show 2>/dev/null | grep -q hfsc; then
+	error "QoS configuration was saved but HFSC shaping did not start; check WAN and IMQ support"
+fi
+
+echo "$CURRENT_STATE" > "$STATE_FILE"
 exit 0

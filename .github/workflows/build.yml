@@ -37,6 +37,7 @@ jobs:
           ar p "${package[0]}" control.tar.gz | tar -xOzf - control | grep -qx 'Status: install user not-installed'
           ar p "${package[0]}" data.tar.gz | tar -tzf - | grep -qx './www/js/device_speed.js'
           ar p "${package[0]}" data.tar.gz | tar -tzf - | grep -qx './etc/config/device_speed'
+          ar p "${package[0]}" data.tar.gz | tar -tzf - | grep -qx './usr/lib/gargoyle/device_speed_refresh.sh'
 
       - name: Upload plugin package
         uses: actions/upload-artifact@v4

@@ -1,7 +1,7 @@
 #!/usr/bin/haserl
 <%
 	eval $( gargoyle_session_validator -c "$COOKIE_hash" -e "$COOKIE_exp" -a "$HTTP_USER_AGENT" -i "$REMOTE_ADDR" -r "login.sh" -t $(uci get gargoyle.global.session_timeout) -b "$COOKIE_browser_time" )
-	gargoyle_header_footer -h -s "firewall" -p "device_speed" -c "internal.css" -j "device_speed.js table.js" -n gargoyle dhcp network device_speed
+	gargoyle_header_footer -h -s "firewall" -p "device_speed" -c "internal.css" -j "device_speed.js table.js" -n gargoyle dhcp network qos_gargoyle device_speed
 %>
 
 <script>
