@@ -1,0 +1,3 @@
+config settings 'main'
+	option upload_capacity '0'
+	option download_capacity '0'

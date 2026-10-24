@@ -1,0 +1,3 @@
+#!/bin/sh
+sh /usr/lib/gargoyle/device_speed_install.sh
+exit 0

@@ -1,0 +1,46 @@
+name: Build Device Speed plugin IPK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+    paths:
+      - "Makefile"
+      - "files/**"
+      - "scripts/build-ipk.sh"
+      - ".github/workflows/build.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Check out plugin repository
+        uses: actions/checkout@v4
+
+      - name: Install packaging tools
+        run: sudo apt-get update && sudo apt-get install -y binutils tar gzip
+
+      - name: Build architecture-independent IPK
+        run: bash scripts/build-ipk.sh "$RUNNER_TEMP/ipk"
+
+      - name: Verify package contents
+        shell: bash
+        run: |
+          set -euo pipefail
+          package=("$RUNNER_TEMP"/ipk/plugin-gargoyle-device-speed_*.ipk)
+          [[ -s "${package[0]}" ]]
+          ar t "${package[0]}"
+          ar p "${package[0]}" control.tar.gz | tar -tzf - | grep -qx 'control'
+          ar p "${package[0]}" data.tar.gz | tar -tzf - | grep -qx './www/js/device_speed.js'
+          ar p "${package[0]}" data.tar.gz | tar -tzf - | grep -qx './etc/config/device_speed'
+
+      - name: Upload plugin package
+        uses: actions/upload-artifact@v4
+        with:
+          name: plugin-gargoyle-device-speed-ipk
+          path: ${{ runner.temp }}/ipk/*.ipk
+          if-no-files-found: error
+          retention-days: 30
