@@ -2,19 +2,8 @@ var deviceSpeedPolicies = [];
 var editingPolicyIndex = -1;
 var deviceSpeedSaving = false;
 
-function setApplyLog(text)
-{
-	var log = document.getElementById("apply_log");
-	if(log)
-	{
-		log.textContent = text;
-		log.scrollTop = log.scrollHeight;
-	}
-}
-
 function policyError(message)
 {
-	setApplyLog("ERROR: " + message);
 	alert(message);
 }
 
@@ -395,7 +384,7 @@ function validatePolicies(uploadCapacity, downloadCapacity)
 function saveChanges()
 {
 	if(deviceSpeedSaving) { return; }
-	setApplyLog("Checking bandwidth policies...");
+
 	for(var i = 0; i < deviceSpeedPolicies.length; i++)
 	{
 		var p = deviceSpeedPolicies[i];
@@ -426,7 +415,6 @@ function addUciOption(config, packageName, section, option, value)
 
 function applyDeviceSpeedConfig(uploadCapacity, downloadCapacity)
 {
-	setApplyLog("Saving policy data, generating QoS classes, and restarting traffic shaping...");
 	var config = uciOriginal.clone();
 	var sections = config.getAllSections("device_speed");
 	for(var i = 0; i < sections.length; i++) { config.removeSection("device_speed", sections[i]); }
@@ -471,16 +459,11 @@ function applyDeviceSpeedConfig(uploadCapacity, downloadCapacity)
 			}
 			if(req.status == 200 && (req.responseText || "").indexOf("ERROR:") < 0)
 			{
-				visibleLines.push("SUCCESS: QoS classes and WAN shaping are active.");
-				var finalLog = visibleLines.join("\n");
-				setApplyLog(finalLog);
-				try { sessionStorage.setItem("device_speed_apply_log", finalLog); } catch(e) {}
 				window.location.reload(true);
 			}
 			else
 			{
-				if(visibleLines.length == 0) { visibleLines.push("ERROR: Apply request failed without a router diagnostic."); }
-				setApplyLog(visibleLines.join("\n"));
+				if(visibleLines.length == 0) { visibleLines.push("Could not apply bandwidth policies. Check the router QoS service and addresses."); }
 				alert(visibleLines.join("\n"));
 			}
 		}
@@ -501,16 +484,6 @@ function initDeviceSpeedPage()
 	document.getElementById("add_policy").onclick = commitPolicyForm;
 	document.getElementById("cancel_policy_edit").onclick = resetPolicyForm;
 	document.getElementById("add_ip_button").onclick = addPolicyAddresses;
-	try
-	{
-		var previousLog = sessionStorage.getItem("device_speed_apply_log");
-		if(previousLog)
-		{
-			setApplyLog(previousLog);
-			sessionStorage.removeItem("device_speed_apply_log");
-		}
-	}
-	catch(e) {}
 }
 
 if(document.readyState == "loading")
