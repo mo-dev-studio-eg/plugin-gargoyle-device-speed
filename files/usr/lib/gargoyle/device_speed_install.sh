@@ -26,11 +26,17 @@ uci set gargoyle.firewall.device_speed='200'
 uci commit gargoyle
 
 CRON_FILE=/etc/crontabs/root
-CRON_ENTRY='* * * * * /usr/lib/gargoyle/device_speed_refresh.sh'
-if ! grep -Fqx "$CRON_ENTRY" "$CRON_FILE" 2>/dev/null; then
-	mkdir -p /etc/crontabs
-	echo "$CRON_ENTRY" >> "$CRON_FILE"
-	/etc/init.d/cron restart >/dev/null 2>&1
+CRON_ENTRY='*/5 * * * * /usr/lib/gargoyle/device_speed_refresh.sh'
+CRON_TMP="/tmp/device_speed.cron.$$"
+mkdir -p /etc/crontabs
+if [ -r "$CRON_FILE" ]; then
+	grep -Fv '/usr/lib/gargoyle/device_speed_refresh.sh' "$CRON_FILE" > "$CRON_TMP" 2>/dev/null || true
+else
+	: > "$CRON_TMP"
 fi
+echo "$CRON_ENTRY" >> "$CRON_TMP"
+mv "$CRON_TMP" "$CRON_FILE"
+chmod 600 "$CRON_FILE"
+/etc/init.d/cron restart >/dev/null 2>&1
 
 exit 0

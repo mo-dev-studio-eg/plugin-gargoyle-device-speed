@@ -8,8 +8,8 @@ aggregate minimum and maximum rates.
 
 The sum of minimum rates is validated separately against upload and download
 capacity. Individual remaining-host policies reserve the minimum independently
-for each known LAN host. A lightweight cron refresh notices DHCP/static-host
-changes and rebuilds individual QoS classes.
+for each known LAN host. A lightweight cron refresh (every five minutes) notices
+DHCP/static-host changes and rebuilds individual QoS classes.
 
 Policies match IPv4 addresses. Maxima may be left blank to use the router WAN
 capacity. Remaining class bandwidth is shared by the Gargoyle QoS scheduler.

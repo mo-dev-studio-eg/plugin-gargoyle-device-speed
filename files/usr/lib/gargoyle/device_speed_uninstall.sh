@@ -23,6 +23,7 @@ uci commit dhcp
 if [ -f /etc/crontabs/root ]; then
 	grep -Fv '/usr/lib/gargoyle/device_speed_refresh.sh' /etc/crontabs/root > /tmp/device_speed.cron
 	mv /tmp/device_speed.cron /etc/crontabs/root
+	chmod 600 /etc/crontabs/root
 	/etc/init.d/cron restart >/dev/null 2>&1
 fi
 

@@ -3,6 +3,7 @@
 . /lib/functions.sh
 
 STATE_FILE=/var/run/device_speed_state
+LOCK_DIR=/var/run/device_speed_refresh.lock
 FORCE=0
 [ "$1" = "--force" ] && FORCE=1
 
@@ -17,8 +18,6 @@ UPLOAD_CAPACITY=0
 DOWNLOAD_CAPACITY=0
 TOTAL_UP_MIN=0
 TOTAL_DOWN_MIN=0
-POLICY_COUNT=0
-ONLY_COUNT=0
 RULE_COUNT=0
 ACTIVE_COUNT=0
 OFFLINE_UP_MIN=0
@@ -26,17 +25,44 @@ OFFLINE_DOWN_MIN=0
 BONUS_UP=0
 BONUS_DOWN=0
 
-log()
-{
-	echo "INFO: $*"
-	logger -t device_speed "$*"
-}
-
 error()
 {
 	echo "ERROR: $*"
-	logger -t device_speed "$*"
 	exit 1
+}
+
+acquire_lock()
+{
+	if mkdir "$LOCK_DIR" 2>/dev/null; then
+		echo $$ > "$LOCK_DIR/pid"
+		return 0
+	fi
+
+	lock_pid="$(cat "$LOCK_DIR/pid" 2>/dev/null)"
+	if [ -z "$lock_pid" ]; then
+		sleep 1
+		lock_pid="$(cat "$LOCK_DIR/pid" 2>/dev/null)"
+	fi
+	if [ -z "$lock_pid" ] || ! kill -0 "$lock_pid" 2>/dev/null; then
+		rm -rf "$LOCK_DIR"
+		if mkdir "$LOCK_DIR" 2>/dev/null; then
+			echo $$ > "$LOCK_DIR/pid"
+			return 0
+		fi
+	fi
+
+	[ "$FORCE" -eq 1 ] || return 1
+
+	wait_count=0
+	while [ -d "$LOCK_DIR" ] && [ "$wait_count" -lt 20 ]; do
+		sleep 1
+		wait_count=$((wait_count + 1))
+	done
+	if mkdir "$LOCK_DIR" 2>/dev/null; then
+		echo $$ > "$LOCK_DIR/pid"
+		return 0
+	fi
+	return 1
 }
 
 is_uint()
@@ -93,12 +119,10 @@ read_policy()
 	[ -z "$up_max" ] || [ "$up_max" -ge "$up_min" ] || error "Upload maximum is below minimum in $section"
 	[ -z "$down_max" ] || [ "$down_max" -ge "$down_min" ] || error "Download maximum is below minimum in $section"
 
-	POLICY_COUNT=$((POLICY_COUNT + 1))
 	case "$applies" in
 		all)
 			[ -z "$ALL_POLICY" ] || error "Only one entire-network policy is allowed"
 			ALL_POLICY="$section"
-			log "Policy $section applies=all; upload min=${up_min} max=${up_max:-$UPLOAD_CAPACITY} Kbps; download min=${down_min} max=${down_max:-$DOWNLOAD_CAPACITY} Kbps"
 		;;
 		only)
 			[ -n "$ips" ] || error "An explicit policy has no IP addresses"
@@ -106,21 +130,16 @@ read_policy()
 				is_ipv4 "$ip" || error "Invalid IP address in $section: $ip"
 				case "$EXPLICIT_IPS" in *" $ip "*) error "An IP appears in more than one explicit policy: $ip" ;; esac
 				EXPLICIT_IPS="$EXPLICIT_IPS$ip "
-				log "Policy $section includes IP $ip"
 			done
 			ONLY_POLICIES="$ONLY_POLICIES $section"
-			ONLY_COUNT=$((ONLY_COUNT + 1))
-			log "Policy $section applies=only; upload min=${up_min} max=${up_max:-$UPLOAD_CAPACITY} Kbps; download min=${down_min} max=${down_max:-$DOWNLOAD_CAPACITY} Kbps"
 		;;
 		others_combined)
 			[ -z "$COMBINED_POLICY" ] || error "Only one combined remaining-host policy is allowed"
 			COMBINED_POLICY="$section"
-			log "Policy $section applies=others_combined; upload min=${up_min} max=${up_max:-$UPLOAD_CAPACITY} Kbps; download min=${down_min} max=${down_max:-$DOWNLOAD_CAPACITY} Kbps"
 		;;
 		others_individual)
 			[ -z "$INDIVIDUAL_POLICY" ] || error "Only one individual remaining-host policy is allowed"
 			INDIVIDUAL_POLICY="$section"
-			log "Policy $section applies=others_individual; upload min=${up_min} max=${up_max:-$UPLOAD_CAPACITY} Kbps; download min=${down_min} max=${down_max:-$DOWNLOAD_CAPACITY} Kbps"
 		;;
 		*) error "Unsupported Applies to value in $section" ;;
 	esac
@@ -180,22 +199,12 @@ get_policy_min_down()
 	echo "$down_min"
 }
 
-# Get the base max for a policy (configured max or capacity if blank)
-get_policy_max_up()
-{
-	local section="$1"
-	local up_max=""
-	config_get up_max "$section" upload_max
-	[ -z "$up_max" ] && echo "$UPLOAD_CAPACITY" || echo "$up_max"
-}
-
-get_policy_max_down()
-{
-	local section="$1"
-	local down_max=""
-	config_get down_max "$section" download_max
-	[ -z "$down_max" ] && echo "$DOWNLOAD_CAPACITY" || echo "$down_max"
-}
+if ! acquire_lock; then
+	[ "$FORCE" -eq 1 ] && error "Another bandwidth refresh is already running; try again shortly"
+	exit 0
+fi
+trap 'rm -rf "$LOCK_DIR"' 0
+trap 'exit 1' INT TERM
 
 config_load device_speed
 config_foreach read_capacity settings
@@ -218,7 +227,6 @@ for section in $ALL_POLICY $COMBINED_POLICY $INDIVIDUAL_POLICY $ONLY_POLICIES; d
 done
 [ "$TOTAL_UP_MIN" -le "$UPLOAD_CAPACITY" ] || error "Sum of upload minimums exceeds router capacity"
 [ "$TOTAL_DOWN_MIN" -le "$DOWNLOAD_CAPACITY" ] || error "Sum of download minimums exceeds router capacity"
-log "Validated capacities: upload=${UPLOAD_CAPACITY} Kbps, download=${DOWNLOAD_CAPACITY} Kbps; policies=$POLICY_COUNT"
 
 if [ -r /tmp/dhcp.leases ]; then
 	while read expiry mac ip hostname; do add_client_ip "$ip"; done < /tmp/dhcp.leases
@@ -233,6 +241,8 @@ read_reserved_host()
 }
 config_load dhcp
 config_foreach read_reserved_host host
+# Restore device_speed options before policy_is_active() reads them again.
+config_load device_speed
 
 LAN_IP="$(uci -q get network.lan.ipaddr)"
 if [ -n "$LAN_IP" ]; then
@@ -240,7 +250,6 @@ if [ -n "$LAN_IP" ]; then
 else
 	CLIENT_IPS="$(echo "$CLIENT_IPS" | tr ' ' '\n' | awk 'NF' | sort -u | tr '\n' ' ')"
 fi
-log "Matched LAN clients: $(echo "$CLIENT_IPS" | wc -w); explicit IPs: $(echo "$EXPLICIT_IPS" | wc -w)"
 
 # Determine connected explicit IPs
 for ip in $EXPLICIT_IPS; do
@@ -250,7 +259,6 @@ done
 # Calculate offline min bandwidth from inactive policies
 # and determine active policies
 ACTIVE_POLICIES=""
-INACTIVE_COUNT=0
 ACTIVE_COUNT=0
 
 # Check ALL policy (always active if exists)
@@ -270,8 +278,6 @@ for section in $ONLY_POLICIES; do
 		down_min=$(get_policy_min_down "$section")
 		OFFLINE_UP_MIN=$((OFFLINE_UP_MIN + up_min))
 		OFFLINE_DOWN_MIN=$((OFFLINE_DOWN_MIN + down_min))
-		INACTIVE_COUNT=$((INACTIVE_COUNT + 1))
-		log "Policy $section is OFFLINE; redistributing ${up_min}K up / ${down_min}K down (min)"
 	fi
 done
 
@@ -282,17 +288,16 @@ if [ -n "$INDIVIDUAL_POLICY" ]; then
 		case "$EXPLICIT_IPS" in *" $ip "*) continue ;; esac
 		INDIVIDUAL_HOSTS="$INDIVIDUAL_HOSTS $ip"
 	done
-	if [ -n "$INDIVIDUAL_HOSTS" ]; then
+	INDIVIDUAL_COUNT=$(echo "$INDIVIDUAL_HOSTS" | wc -w)
+	if [ "$INDIVIDUAL_COUNT" -gt 0 ]; then
 		ACTIVE_POLICIES="$ACTIVE_POLICIES $INDIVIDUAL_POLICY"
-		ACTIVE_COUNT=$((ACTIVE_COUNT + 1))
+		ACTIVE_COUNT=$((ACTIVE_COUNT + INDIVIDUAL_COUNT))
 	else
 		# Inactive: add its min to offline pool
 		up_min=$(get_policy_min_up "$INDIVIDUAL_POLICY")
 		down_min=$(get_policy_min_down "$INDIVIDUAL_POLICY")
 		OFFLINE_UP_MIN=$((OFFLINE_UP_MIN + up_min))
 		OFFLINE_DOWN_MIN=$((OFFLINE_DOWN_MIN + down_min))
-		INACTIVE_COUNT=$((INACTIVE_COUNT + 1))
-		log "Individual policy is OFFLINE; redistributing ${up_min}K up / ${down_min}K down (min)"
 	fi
 fi
 
@@ -305,31 +310,11 @@ else
 	BONUS_DOWN=0
 fi
 
-log "Active policies: $ACTIVE_COUNT; inactive: $INACTIVE_COUNT; offline min: ${OFFLINE_UP_MIN}K up / ${OFFLINE_DOWN_MIN}K down; bonus per active: ${BONUS_UP}K up / ${BONUS_DOWN}K down"
-
-# Calculate effective min for each active policy
-get_effective_min_up()
-{
-	local section="$1"
-	local base_min=$(get_policy_min_up "$section")
-	local effective=$((base_min + BONUS_UP))
-	[ "$effective" -gt "$UPLOAD_CAPACITY" ] && effective=$UPLOAD_CAPACITY
-	echo "$effective"
-}
-
-get_effective_min_down()
-{
-	local section="$1"
-	local base_min=$(get_policy_min_down "$section")
-	local effective=$((base_min + BONUS_DOWN))
-	[ "$effective" -gt "$DOWNLOAD_CAPACITY" ] && effective=$DOWNLOAD_CAPACITY
-	echo "$effective"
-}
-
 # Calculate total min for validation (using base mins, not effective)
 TOTAL_UP_MIN=0
 TOTAL_DOWN_MIN=0
 for section in $ACTIVE_POLICIES; do
+	[ "$section" = "$INDIVIDUAL_POLICY" ] && continue
 	up_min=0; down_min=0
 	config_get up_min "$section" upload_min 0
 	config_get down_min "$section" download_min 0
@@ -338,43 +323,31 @@ for section in $ACTIVE_POLICIES; do
 done
 
 # For individual policy, multiply by number of connected hosts
-if [ -n "$INDIVIDUAL_POLICY" ]; then
-	INDIVIDUAL_HOSTS=""
-	for ip in $CLIENT_IPS; do
-		case "$EXPLICIT_IPS" in *" $ip "*) continue ;; esac
-		INDIVIDUAL_HOSTS="$INDIVIDUAL_HOSTS $ip"
-	done
-	INDIVIDUAL_COUNT=$(echo "$INDIVIDUAL_HOSTS" | wc -w)
-	if [ -n "$INDIVIDUAL_POLICY" ] && [ "$INDIVIDUAL_COUNT" -gt 0 ]; then
-		up_min=0; down_min=0
-		config_get up_min "$INDIVIDUAL_POLICY" upload_min 0
-		config_get down_min "$INDIVIDUAL_POLICY" download_min 0
-		TOTAL_UP_MIN=$((TOTAL_UP_MIN + up_min * INDIVIDUAL_COUNT))
-		TOTAL_DOWN_MIN=$((TOTAL_DOWN_MIN + down_min * INDIVIDUAL_COUNT))
-	fi
+if [ -n "$INDIVIDUAL_POLICY" ] && [ "$INDIVIDUAL_COUNT" -gt 0 ]; then
+	up_min=0; down_min=0
+	config_get up_min "$INDIVIDUAL_POLICY" upload_min 0
+	config_get down_min "$INDIVIDUAL_POLICY" download_min 0
+	TOTAL_UP_MIN=$((TOTAL_UP_MIN + up_min * INDIVIDUAL_COUNT))
+	TOTAL_DOWN_MIN=$((TOTAL_DOWN_MIN + down_min * INDIVIDUAL_COUNT))
 fi
 
 [ "$TOTAL_UP_MIN" -le "$UPLOAD_CAPACITY" ] || error "Sum of upload minimums exceeds router capacity"
 [ "$TOTAL_DOWN_MIN" -le "$DOWNLOAD_CAPACITY" ] || error "Sum of download minimums exceeds router capacity"
 
-# Calculate class count
+# Calculate class count. The default class also represents an all/combined
+# policy, so those sections must not add another class.
 CLASS_COUNT=1  # default class
 for section in $ACTIVE_POLICIES; do
-	case "$(config_get "$section" applies)" in
+	applies=""
+	config_get applies "$section" applies
+	case "$applies" in
+		all|others_combined)
+			# Represented by the default class created below.
+		;;
 		only)
-			ips=""
-			config_get ips "$section" ip
-			for ip in $ips; do
-				is_connected "$ip" && CLASS_COUNT=$((CLASS_COUNT + 1))
-			done
+			CLASS_COUNT=$((CLASS_COUNT + 1))
 		;;
 		others_individual)
-			INDIVIDUAL_HOSTS=""
-			for ip in $CLIENT_IPS; do
-				case "$EXPLICIT_IPS" in *" $ip "*) continue ;; esac
-				INDIVIDUAL_HOSTS="$INDIVIDUAL_HOSTS $ip"
-			done
-			INDIVIDUAL_COUNT=$(echo "$INDIVIDUAL_HOSTS" | wc -w)
 			CLASS_COUNT=$((CLASS_COUNT + INDIVIDUAL_COUNT))
 		;;
 		*) CLASS_COUNT=$((CLASS_COUNT + 1)) ;;
@@ -383,8 +356,16 @@ done
 
 [ "$CLASS_COUNT" -le 60 ] || error "QoS class limit exceeded (maximum 60)"
 
-# Build state string including connected devices
-CURRENT_STATE="$(uci -q show device_speed; printf '%s\n' "$CLIENT_IPS"; printf '%s\n' "$CONNECTED_EXPLICIT_IPS")"
+# Include only the connected-device state that can affect the generated classes.
+CURRENT_STATE="$(uci -q show device_speed)"
+if [ -n "$ONLY_POLICIES" ]; then
+	CURRENT_STATE="$CURRENT_STATE
+$CONNECTED_EXPLICIT_IPS"
+fi
+if [ -n "$INDIVIDUAL_POLICY" ]; then
+	CURRENT_STATE="$CURRENT_STATE
+$INDIVIDUAL_HOSTS"
+fi
 if [ "$FORCE" -eq 0 ] && [ -r "$STATE_FILE" ] && [ "$(cat "$STATE_FILE")" = "$CURRENT_STATE" ] &&
 	[ "$(uci -q get qos_gargoyle.upload.total_bandwidth)" = "$UPLOAD_CAPACITY" ] &&
 	[ "$(uci -q get qos_gargoyle.download.total_bandwidth)" = "$DOWNLOAD_CAPACITY" ] &&
@@ -397,8 +378,6 @@ ensure_qos_config
 # This plugin owns the QoS configuration after installation. Rebuild it from
 # the validated device_speed model so no stale upload/download classes survive.
 old_sections="$(uci -q show qos_gargoyle 2>/dev/null | sed -n 's/^qos_gargoyle\.\([^.=]*\)=.*/\1/p' | sort -u)"
-set -- $old_sections
-log "Replacing $#: existing QoS sections"
 for section in $old_sections; do uci -q delete "qos_gargoyle.$section" 2>/dev/null; done
 
 uci set qos_gargoyle.upload=upload
@@ -410,7 +389,6 @@ uci set qos_gargoyle.download.default_class=dclass_speed_default
 uci set qos_gargoyle.upload.device_speed_managed=1
 uci set qos_gargoyle.download.device_speed_managed=1
 uci set qos_gargoyle.download.qos_monenabled=false
-uci set gargoyle.status.qos=300
 
 CLASS_SHARE=$((100 / CLASS_COUNT))
 SHARE_REMAINDER=$((100 - CLASS_SHARE * CLASS_COUNT))
@@ -450,7 +428,6 @@ create_rule_pair()
 	local ip="$3"
 	local order="$4"
 	local generated="$5"
-	log "QoS rule: $ip -> class $class_id ($id)"
 	uci set "qos_gargoyle.upload_rule_$id=upload_rule"
 	uci set "qos_gargoyle.upload_rule_$id.class=uclass_$class_id"
 	uci set "qos_gargoyle.upload_rule_$id.test_order=$order"
@@ -467,7 +444,6 @@ create_rule_pair()
 	fi
 }
 
-config_load device_speed
 default_section="$ALL_POLICY"
 [ -n "$default_section" ] || default_section="$COMBINED_POLICY"
 if [ -n "$default_section" ] && policy_is_active "$default_section"; then
@@ -491,7 +467,7 @@ create_class_pair speed_default "$default_name" "$effective_up_min" "$default_up
 policy_index=0
 rule_order=100
 for section in $ONLY_POLICIES; do
-	policy_is_active "$section" || { log "Skipping offline policy $section"; continue; }
+	policy_is_active "$section" || continue
 	policy_index=$((policy_index + 1))
 	config_get ips "$section" ip
 	config_get up_min "$section" upload_min 0
@@ -505,9 +481,11 @@ for section in $ONLY_POLICIES; do
 	[ "$effective_up_min" -gt "$UPLOAD_CAPACITY" ] && effective_up_min=$UPLOAD_CAPACITY
 	[ "$effective_down_min" -gt "$DOWNLOAD_CAPACITY" ] && effective_down_min=$DOWNLOAD_CAPACITY
 	create_class_pair "$class_id" "Explicit_policy_$policy_index" "$effective_up_min" "$up_max" "$effective_down_min" "$down_max" 0
+	ip_index=0
 	for ip in $ips; do
-		is_connected "$ip" || { log "Skipping offline IP $ip"; continue; }
-		create_rule_pair "speed_policy_${policy_index}_${ip}" "$class_id" "$ip" "$rule_order" 0
+		is_connected "$ip" || continue
+		ip_index=$((ip_index + 1))
+		create_rule_pair "speed_policy_${policy_index}_${ip_index}" "$class_id" "$ip" "$rule_order" 0
 		rule_order=$((rule_order + 100))
 		RULE_COUNT=$((RULE_COUNT + 1))
 	done
@@ -535,9 +513,11 @@ if [ -n "$INDIVIDUAL_POLICY" ]; then
 	done
 fi
 
-log "Generated QoS classes=$CLASS_COUNT and IP rules=$RULE_COUNT; committing configuration"
 uci commit qos_gargoyle
-uci commit gargoyle
+if [ "$(uci -q get gargoyle.status.qos)" != "300" ]; then
+	uci set gargoyle.status.qos=300
+	uci commit gargoyle
+fi
 if [ "$(uci -q get qos_gargoyle.upload.total_bandwidth)" != "$UPLOAD_CAPACITY" ] || [ "$(uci -q get qos_gargoyle.download.total_bandwidth)" != "$DOWNLOAD_CAPACITY" ]; then
 	error "QoS bandwidth settings did not persist"
 fi
@@ -548,23 +528,14 @@ actual_download_rules="$(uci -q show qos_gargoyle | grep -c '=download_rule$')"
 if [ "$actual_upload_classes" -ne "$CLASS_COUNT" ] || [ "$actual_download_classes" -ne "$CLASS_COUNT" ] || [ "$actual_upload_rules" -ne "$RULE_COUNT" ] || [ "$actual_download_rules" -ne "$RULE_COUNT" ]; then
 	error "QoS objects mismatch: expected classes=$CLASS_COUNT rules=$RULE_COUNT, got upload classes=$actual_upload_classes rules=$actual_upload_rules; download classes=$actual_download_classes rules=$actual_download_rules"
 fi
-log "Persisted QoS config: upload classes=$actual_upload_classes rules=$actual_upload_rules; download classes=$actual_download_classes rules=$actual_download_rules"
 /etc/init.d/qos_gargoyle stop >/dev/null 2>&1
 wan_interface="$(uci -q -P /var/state get network.wan.ifname 2>/dev/null)"
 [ -n "$wan_interface" ] || wan_interface="$(uci -q -P /var/state get network.wan.device 2>/dev/null)"
 [ -n "$wan_interface" ] || error "Cannot determine the active WAN interface"
-old_wan_qdisc="$(tc qdisc show dev "$wan_interface" 2>&1 | grep -E 'qdisc (hfsc|tbf|prio)' | tr '\n' ';')"
-old_download_qdisc="$(tc qdisc show dev imq0 2>&1 | grep -E 'qdisc (hfsc|tbf|prio)' | tr '\n' ';')"
-log "Previous qdiscs: WAN($wan_interface)=${old_wan_qdisc:-none}; imq0=${old_download_qdisc:-none}"
-log "Clearing stale root qdiscs before applying HFSC"
 tc qdisc del dev "$wan_interface" root >/dev/null 2>&1
 tc qdisc del dev imq0 root >/dev/null 2>&1
 /etc/init.d/qos_gargoyle enable >/dev/null 2>&1
-if /etc/init.d/qos_gargoyle start >/dev/null 2>&1; then
-	log "qos_gargoyle start command completed"
-else
-	error "qos_gargoyle start command failed"
-fi
+/etc/init.d/qos_gargoyle start >/dev/null 2>&1 || error "qos_gargoyle start command failed"
 
 wan_qdisc="$(tc qdisc show dev "$wan_interface" 2>&1 | grep -E 'qdisc (hfsc|tbf|prio)' | tr '\n' ';')"
 download_qdisc="$(tc qdisc show dev imq0 2>&1 | grep -E 'qdisc (hfsc|tbf|prio)' | tr '\n' ';')"
@@ -576,6 +547,4 @@ if ! echo "$download_qdisc" | grep -q 'qdisc hfsc'; then
 fi
 
 echo "$CURRENT_STATE" > "$STATE_FILE"
-log "QoS verified: WAN interface=$wan_interface; qdisc=$wan_qdisc"
-log "QoS verified: download interface=imq0; qdisc=$download_qdisc"
 exit 0
