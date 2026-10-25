@@ -180,12 +180,15 @@ if [ "$FORCE" -eq 0 ] && [ -r "$STATE_FILE" ] && [ "$(cat "$STATE_FILE")" = "$CU
 	exit 0
 fi
 
+# Ensure the QoS config file exists; uci cannot create it on older OpenWrt.
+[ -f /etc/config/qos_gargoyle ] || touch /etc/config/qos_gargoyle
+
 # This plugin owns the QoS configuration after installation. Rebuild it from
 # the validated device_speed model so no stale upload/download classes survive.
-old_sections="$(uci -q show qos_gargoyle | sed -n 's/^qos_gargoyle\.\([^.=]*\)=.*/\1/p' | sort -u)"
+old_sections="$(uci -q show qos_gargoyle 2>/dev/null | sed -n 's/^qos_gargoyle\.\([^.=]*\)=.*/\1/p' | sort -u)"
 set -- $old_sections
 log "Replacing $#: existing QoS sections"
-for section in $old_sections; do uci -q delete "qos_gargoyle.$section"; done
+for section in $old_sections; do uci -q delete "qos_gargoyle.$section" 2>/dev/null; done
 
 uci set qos_gargoyle.upload=upload
 uci set qos_gargoyle.download=download
