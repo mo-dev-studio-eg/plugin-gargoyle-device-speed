@@ -18,6 +18,13 @@ TOTAL_UP_MIN=0
 TOTAL_DOWN_MIN=0
 POLICY_COUNT=0
 ONLY_COUNT=0
+RULE_COUNT=0
+
+log()
+{
+	echo "INFO: $*"
+	logger -t device_speed "$*"
+}
 
 error()
 {
@@ -77,6 +84,7 @@ read_policy()
 	[ "$down_min" -le "$DOWNLOAD_CAPACITY" ] || error "Download minimum exceeds router capacity"
 	[ -z "$up_max" ] || [ "$up_max" -le "$UPLOAD_CAPACITY" ] || error "Upload maximum exceeds router capacity"
 	[ -z "$down_max" ] || [ "$down_max" -le "$DOWNLOAD_CAPACITY" ] || error "Download maximum exceeds router capacity"
+	log "Policy $section applies=$applies; upload=${up_min}-${up_max:-$UPLOAD_CAPACITY} Kbps; download=${down_min}-${down_max:-$DOWNLOAD_CAPACITY} Kbps"
 
 	POLICY_COUNT=$((POLICY_COUNT + 1))
 	case "$applies" in
@@ -92,6 +100,7 @@ read_policy()
 				is_ipv4 "$ip" || error "Invalid IP address in $section: $ip"
 				case "$EXPLICIT_IPS" in *" $ip "*) error "An IP appears in more than one explicit policy: $ip" ;; esac
 				EXPLICIT_IPS="$EXPLICIT_IPS$ip "
+				log "Policy $section includes IP $ip"
 			done
 			ONLY_POLICIES="$ONLY_POLICIES $section"
 			ONLY_COUNT=$((ONLY_COUNT + 1))
@@ -123,6 +132,7 @@ config_foreach read_policy policy
 [ -z "$COMBINED_POLICY" ] || [ -z "$INDIVIDUAL_POLICY" ] || error "Combined and individual remaining-host policies cannot both be used"
 [ "$TOTAL_UP_MIN" -le "$UPLOAD_CAPACITY" ] || error "Sum of upload minimums exceeds router capacity"
 [ "$TOTAL_DOWN_MIN" -le "$DOWNLOAD_CAPACITY" ] || error "Sum of download minimums exceeds router capacity"
+log "Validated capacities: upload=${UPLOAD_CAPACITY} Kbps, download=${DOWNLOAD_CAPACITY} Kbps; policies=$POLICY_COUNT"
 
 if [ -r /tmp/dhcp.leases ]; then
 	while read expiry mac ip hostname; do add_client_ip "$ip"; done < /tmp/dhcp.leases
@@ -148,6 +158,7 @@ fi
 
 set -- $CLIENT_IPS
 CLIENT_COUNT=$#
+log "Matched LAN clients: $CLIENT_COUNT; explicit IPs: $(echo "$EXPLICIT_IPS" | wc -w)"
 if [ -n "$INDIVIDUAL_POLICY" ]; then
 	config_load device_speed
 	config_get IND_UP_MIN "$INDIVIDUAL_POLICY" upload_min 0
@@ -172,6 +183,8 @@ fi
 # This plugin owns the QoS configuration after installation. Rebuild it from
 # the validated device_speed model so no stale upload/download classes survive.
 old_sections="$(uci -q show qos_gargoyle | sed -n 's/^qos_gargoyle\.\([^.=]*\)=.*/\1/p' | sort -u)"
+set -- $old_sections
+log "Replacing $#: existing QoS sections"
 for section in $old_sections; do uci -q delete "qos_gargoyle.$section"; done
 
 uci set qos_gargoyle.upload=upload
@@ -223,6 +236,7 @@ create_rule_pair()
 	local ip="$3"
 	local order="$4"
 	local generated="$5"
+	log "QoS rule: $ip -> class $class_id ($id)"
 	uci set "qos_gargoyle.upload_rule_$id=upload_rule"
 	uci set "qos_gargoyle.upload_rule_$id.class=uclass_$class_id"
 	uci set "qos_gargoyle.upload_rule_$id.test_order=$order"
@@ -270,6 +284,7 @@ for section in $ONLY_POLICIES; do
 		ip_index=$((ip_index + 1))
 		create_rule_pair "speed_policy_${policy_index}_${ip_index}" "$class_id" "$ip" "$rule_order" 0
 		rule_order=$((rule_order + 100))
+		RULE_COUNT=$((RULE_COUNT + 1))
 	done
 done
 
@@ -285,20 +300,51 @@ if [ -n "$INDIVIDUAL_POLICY" ]; then
 		create_class_pair "$class_id" "Other_$ip" "$up_min" "$up_max" "$down_min" "$down_max" 1
 		create_rule_pair "speed_ind_$index" "$class_id" "$ip" "$rule_order" 1
 		rule_order=$((rule_order + 100))
+		RULE_COUNT=$((RULE_COUNT + 1))
 	done
 fi
 
+log "Generated QoS classes=$CLASS_COUNT and IP rules=$RULE_COUNT; committing configuration"
 uci commit qos_gargoyle
 uci commit gargoyle
 if [ "$(uci -q get qos_gargoyle.upload.total_bandwidth)" != "$UPLOAD_CAPACITY" ] || [ "$(uci -q get qos_gargoyle.download.total_bandwidth)" != "$DOWNLOAD_CAPACITY" ]; then
 	error "QoS bandwidth settings did not persist"
 fi
+actual_upload_classes="$(uci -q show qos_gargoyle | grep -c '=upload_class$')"
+actual_download_classes="$(uci -q show qos_gargoyle | grep -c '=download_class$')"
+actual_upload_rules="$(uci -q show qos_gargoyle | grep -c '=upload_rule$')"
+actual_download_rules="$(uci -q show qos_gargoyle | grep -c '=download_rule$')"
+if [ "$actual_upload_classes" -ne "$CLASS_COUNT" ] || [ "$actual_download_classes" -ne "$CLASS_COUNT" ] || [ "$actual_upload_rules" -ne "$RULE_COUNT" ] || [ "$actual_download_rules" -ne "$RULE_COUNT" ]; then
+	error "QoS objects mismatch: expected classes=$CLASS_COUNT rules=$RULE_COUNT, got upload classes=$actual_upload_classes rules=$actual_upload_rules; download classes=$actual_download_classes rules=$actual_download_rules"
+fi
+log "Persisted QoS config: upload classes=$actual_upload_classes rules=$actual_upload_rules; download classes=$actual_download_classes rules=$actual_download_rules"
+/etc/init.d/qos_gargoyle stop >/dev/null 2>&1
+wan_interface="$(uci -q -P /var/state get network.wan.ifname 2>/dev/null)"
+[ -n "$wan_interface" ] || wan_interface="$(uci -q -P /var/state get network.wan.device 2>/dev/null)"
+[ -n "$wan_interface" ] || error "Cannot determine the active WAN interface"
+old_wan_qdisc="$(tc qdisc show dev "$wan_interface" 2>&1 | grep -E 'qdisc (hfsc|tbf|prio)' | tr '\n' ';')"
+old_download_qdisc="$(tc qdisc show dev imq0 2>&1 | grep -E 'qdisc (hfsc|tbf|prio)' | tr '\n' ';')"
+log "Previous qdiscs: WAN($wan_interface)=${old_wan_qdisc:-none}; imq0=${old_download_qdisc:-none}"
+log "Clearing stale root qdiscs before applying HFSC"
+tc qdisc del dev "$wan_interface" root >/dev/null 2>&1
+tc qdisc del dev imq0 root >/dev/null 2>&1
 /etc/init.d/qos_gargoyle enable >/dev/null 2>&1
-/etc/init.d/qos_gargoyle start >/dev/null 2>&1
+if /etc/init.d/qos_gargoyle start >/dev/null 2>&1; then
+	log "qos_gargoyle start command completed"
+else
+	error "qos_gargoyle start command failed"
+fi
 
-if ! /etc/init.d/qos_gargoyle show 2>/dev/null | grep -q hfsc; then
-	error "QoS configuration was saved but HFSC shaping did not start; check WAN and IMQ support"
+wan_qdisc="$(tc qdisc show dev "$wan_interface" 2>&1 | grep -E 'qdisc (hfsc|tbf|prio)' | tr '\n' ';')"
+download_qdisc="$(tc qdisc show dev imq0 2>&1 | grep -E 'qdisc (hfsc|tbf|prio)' | tr '\n' ';')"
+if ! echo "$wan_qdisc" | grep -q 'qdisc hfsc'; then
+	error "No HFSC upload qdisc on WAN interface '$wan_interface'. Current WAN qdisc: ${wan_qdisc:-none}"
+fi
+if ! echo "$download_qdisc" | grep -q 'qdisc hfsc'; then
+	error "No HFSC download qdisc on imq0. Current download qdisc: ${download_qdisc:-none}"
 fi
 
 echo "$CURRENT_STATE" > "$STATE_FILE"
+log "QoS verified: WAN interface=$wan_interface; qdisc=$wan_qdisc"
+log "QoS verified: download interface=imq0; qdisc=$download_qdisc"
 exit 0

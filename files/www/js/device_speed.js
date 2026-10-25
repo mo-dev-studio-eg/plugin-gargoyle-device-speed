@@ -2,6 +2,22 @@ var deviceSpeedPolicies = [];
 var editingPolicyIndex = -1;
 var deviceSpeedSaving = false;
 
+function setApplyLog(text)
+{
+	var log = document.getElementById("apply_log");
+	if(log)
+	{
+		log.textContent = text;
+		log.scrollTop = log.scrollHeight;
+	}
+}
+
+function policyError(message)
+{
+	setApplyLog("ERROR: " + message);
+	alert(message);
+}
+
 function resetData()
 {
 	setFieldValue("upload_capacity", uciOriginal.get("device_speed", "main", "upload_capacity"));
@@ -253,7 +269,7 @@ function validateSinglePolicy(policy, checkExisting)
 	var downloadCapacity = parseKbps(document.getElementById("download_capacity").value.trim(), false);
 	if(isNaN(uploadCapacity) || isNaN(downloadCapacity) || uploadCapacity <= 0 || downloadCapacity <= 0)
 	{
-		alert("Enter positive router upload and download capacities in Kbps.");
+		policyError("Enter positive router upload and download capacities in Kbps.");
 		return false;
 	}
 	var upMin = parseKbps(policy.uploadMin, false);
@@ -262,34 +278,34 @@ function validateSinglePolicy(policy, checkExisting)
 	var downMax = parseKbps(policy.downloadMax, true);
 	if(isNaN(upMin) || isNaN(downMin) || upMin < 0 || downMin < 0 || isNaN(upMax) || isNaN(downMax))
 	{
-		alert("Enter non-negative whole-number rates in Kbps.");
+		policyError("Enter non-negative whole-number rates in Kbps.");
 		return false;
 	}
 	if(upMin > uploadCapacity || downMin > downloadCapacity || (upMax != null && upMax > uploadCapacity) || (downMax != null && downMax > downloadCapacity))
 	{
-		alert("A policy rate cannot exceed the router capacity for its direction.");
+		policyError("A policy rate cannot exceed the router capacity for its direction.");
 		return false;
 	}
 	if((upMax != null && upMax < upMin) || (downMax != null && downMax < downMin))
 	{
-		alert("A policy maximum cannot be lower than its minimum.");
+		policyError("A policy maximum cannot be lower than its minimum.");
 		return false;
 	}
 	if(policy.applies == "only")
 	{
-		if(policy.ips.length == 0) { alert("Add at least one IP address to this policy."); return false; }
+		if(policy.ips.length == 0) { policyError("Add at least one IP address to this policy."); return false; }
 		for(var i = 0; i < policy.ips.length; i++)
 		{
 			if(!isValidIPv4(policy.ips[i]) || !isLanAddress(policy.ips[i]))
 			{
-				alert("Enter LAN IPv4 addresses only. IP ranges and CIDR notation are not supported for speed rules.");
+				policyError("Enter LAN IPv4 addresses only. IP ranges and CIDR notation are not supported for speed rules.");
 				return false;
 			}
 		}
 	}
 	else if(["all", "others_individual", "others_combined"].indexOf(policy.applies) < 0)
 	{
-		alert("Select a valid Applies to option.");
+		policyError("Select a valid Applies to option.");
 		return false;
 	}
 	return true;
@@ -344,7 +360,7 @@ function validatePolicies(uploadCapacity, downloadCapacity)
 				var ip = policy.ips[ipIndex];
 				if(explicitIps.indexOf(ip) >= 0)
 				{
-					alert("An IP address can appear in only one explicit policy.");
+					policyError("An IP address can appear in only one explicit policy.");
 					return null;
 				}
 				explicitIps.push(ip);
@@ -353,7 +369,7 @@ function validatePolicies(uploadCapacity, downloadCapacity)
 	}
 	if(allCount > 1 || individualCount > 1 || combinedCount > 1 || (individualCount > 0 && combinedCount > 0) || (allCount > 0 && (individualCount > 0 || combinedCount > 0)))
 	{
-		alert("Use no more than one network-wide policy and choose either individual or combined treatment for remaining hosts.");
+		policyError("Use no more than one network-wide policy and choose either individual or combined treatment for remaining hosts.");
 		return null;
 	}
 
@@ -370,7 +386,7 @@ function validatePolicies(uploadCapacity, downloadCapacity)
 	}
 	if(uploadMinimumSum > uploadCapacity || downloadMinimumSum > downloadCapacity)
 	{
-		alert("The sum of minimum rates (counting each individual remaining host) cannot exceed router capacity in the same direction.");
+		policyError("The sum of minimum rates (counting each individual remaining host) cannot exceed router capacity in the same direction.");
 		return null;
 	}
 	return {explicitIps: explicitIps, individualTargets: individualTargets};
@@ -379,6 +395,7 @@ function validatePolicies(uploadCapacity, downloadCapacity)
 function saveChanges()
 {
 	if(deviceSpeedSaving) { return; }
+	setApplyLog("Checking bandwidth policies...");
 	for(var i = 0; i < deviceSpeedPolicies.length; i++)
 	{
 		var p = deviceSpeedPolicies[i];
@@ -389,14 +406,14 @@ function saveChanges()
 	var downloadCapacity = parseKbps(document.getElementById("download_capacity").value.trim(), false);
 	if(isNaN(uploadCapacity) || isNaN(downloadCapacity) || uploadCapacity <= 0 || downloadCapacity <= 0)
 	{
-		alert("Enter positive router upload and download capacities in Kbps.");
+		policyError("Enter positive router upload and download capacities in Kbps.");
 		return;
 	}
 	var validation = validatePolicies(uploadCapacity, downloadCapacity);
 	if(validation == null) { return; }
 	if(1 + deviceSpeedPolicies.filter(function(p) { return p.applies == "only"; }).length + validation.individualTargets.length > 60)
 	{
-		alert("The QoS engine supports up to 60 speed classes. Reduce the number of policies or individual hosts.");
+		policyError("The QoS engine supports up to 60 speed classes. Reduce the number of policies or individual hosts.");
 		return;
 	}
 	applyDeviceSpeedConfig(uploadCapacity, downloadCapacity);
@@ -409,6 +426,7 @@ function addUciOption(config, packageName, section, option, value)
 
 function applyDeviceSpeedConfig(uploadCapacity, downloadCapacity)
 {
+	setApplyLog("Saving policy data, generating QoS classes, and restarting traffic shaping...");
 	var config = uciOriginal.clone();
 	var sections = config.getAllSections("device_speed");
 	for(var i = 0; i < sections.length; i++) { config.removeSection("device_speed", sections[i]); }
@@ -444,8 +462,27 @@ function applyDeviceSpeedConfig(uploadCapacity, downloadCapacity)
 		{
 			deviceSpeedSaving = false;
 			setControlsEnabled(true);
-			if(req.status == 200 && req.responseText.indexOf("ERROR") < 0) { window.location.reload(true); }
-			else { alert("Could not apply bandwidth policies. Check the addresses and try again."); }
+			var responseLines = (req.responseText || "").split(/[\r\n]+/);
+			var visibleLines = [];
+			for(var lineIndex = 0; lineIndex < responseLines.length; lineIndex++)
+			{
+				var line = responseLines[lineIndex].trim();
+				if(line != "" && line != "Success") { visibleLines.push(line); }
+			}
+			if(req.status == 200 && (req.responseText || "").indexOf("ERROR:") < 0)
+			{
+				visibleLines.push("SUCCESS: QoS classes and WAN shaping are active.");
+				var finalLog = visibleLines.join("\n");
+				setApplyLog(finalLog);
+				try { sessionStorage.setItem("device_speed_apply_log", finalLog); } catch(e) {}
+				window.location.reload(true);
+			}
+			else
+			{
+				if(visibleLines.length == 0) { visibleLines.push("ERROR: Apply request failed without a router diagnostic."); }
+				setApplyLog(visibleLines.join("\n"));
+				alert(visibleLines.join("\n"));
+			}
 		}
 	};
 	var param = getParameterDefinition("commands", commands) + "&" + getParameterDefinition("hash", document.cookie.replace(/^.*hash=/, "").replace(/[\t ;]+.*$/, ""));
@@ -464,6 +501,16 @@ function initDeviceSpeedPage()
 	document.getElementById("add_policy").onclick = commitPolicyForm;
 	document.getElementById("cancel_policy_edit").onclick = resetPolicyForm;
 	document.getElementById("add_ip_button").onclick = addPolicyAddresses;
+	try
+	{
+		var previousLog = sessionStorage.getItem("device_speed_apply_log");
+		if(previousLog)
+		{
+			setApplyLog(previousLog);
+			sessionStorage.removeItem("device_speed_apply_log");
+		}
+	}
+	catch(e) {}
 }
 
 if(document.readyState == "loading")

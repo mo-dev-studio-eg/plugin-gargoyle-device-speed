@@ -57,7 +57,10 @@ var dhcpLeaseLines = [];
 	<input type="button" id="save_button" class="bottom_button" value="Save changes" onclick="saveChanges()" />
 	<input type="button" id="reset_button" class="bottom_button" value="Reset" onclick="resetData()" />
 </div>
-<div id="update_container"></div>
+<fieldset>
+	<legend class="sectionheader">Apply log</legend>
+	<pre id="apply_log" style="white-space:pre-wrap;max-height:240px;overflow:auto;">No apply attempt yet.</pre>
+</fieldset>
 
 <script>resetData();</script>
 <%
