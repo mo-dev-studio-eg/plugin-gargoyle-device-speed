@@ -46,10 +46,11 @@ var dhcpLeaseLines = [];
 	<div class="internal_divider"></div>
 	<div><input type="button" id="add_policy" class="default_button" value="Add policy" /></div>
 	<div><input type="button" id="cancel_policy_edit" value="Cancel edit" style="display:none;" /></div>
-</fieldset>
 
-<fieldset>
-	<legend class="sectionheader">Active bandwidth policies</legend>
+	<div id='internal_divider1' class='internal_divider'></div>
+
+	<span id="active_policies_label" style="text-decoration:underline">Active bandwidth policies:</span>
+
 	<div id="policies_table_container"></div>
 </fieldset>
 
